@@ -56,6 +56,16 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', connection: connectionStatus, version: '1.0.0' })
 })
 
+app.get('/qr', (req, res) => {
+  const key = req.query.key
+  if (key !== API_KEY) return res.status(401).send('Unauthorized')
+  if (connectionStatus === 'connected') {
+    return res.send('<html><body style="font-family:sans-serif;text-align:center;padding:40px"><h2 style="color:green">✅ WhatsApp Conectado!</h2></body></html>')
+  }
+  const img = qrBase64 ? `<img src="${qrBase64}" style="width:300px;height:300px"/>` : '<p>Aguardando QR code... atualize em 5 segundos</p>'
+  res.send(`<html><head><meta http-equiv="refresh" content="10"/></head><body style="font-family:sans-serif;text-align:center;padding:40px"><h2>Escaneie o QR Code</h2>${img}<p style="color:gray">Atualiza automaticamente a cada 10 segundos</p></body></html>`)
+})
+
 app.get('/qrcode', authMiddleware, (req, res) => {
   if (connectionStatus === 'connected') {
     return res.json({ status: 'connected', message: 'WhatsApp ja esta conectado' })
