@@ -17,6 +17,41 @@ const authMiddleware = (req, res, next) => {
   next()
 }
 
+// Para numeros brasileiros de 13 digitos (55+DDD+9+8), tenta 12 digitos (remove o 9).
+// Para 12 digitos (55+DDD+8), tenta 13 digitos (adiciona o 9).
+function alternateFormat(digits) {
+  if (!digits.startsWith('55')) return null
+  if (digits.length === 13) {
+    const local = digits.slice(4)
+    if (local.startsWith('9')) return digits.slice(0, 4) + local.slice(1)
+  }
+  if (digits.length === 12) {
+    return digits.slice(0, 4) + '9' + digits.slice(4)
+  }
+  return null
+}
+
+// Retorna o JID correto verificando com o WhatsApp. Tenta o formato alternativo se o principal nao existir.
+async function resolveJid(number) {
+  const digits = number.replace(/\D/g, '')
+  const primaryJid = `${digits}@s.whatsapp.net`
+
+  try {
+    const [primary] = await sock.onWhatsApp(primaryJid)
+    if (primary?.exists) return primary.jid
+
+    const alt = alternateFormat(digits)
+    if (alt) {
+      const [altResult] = await sock.onWhatsApp(`${alt}@s.whatsapp.net`)
+      if (altResult?.exists) return altResult.jid
+    }
+  } catch (err) {
+    console.error('Erro ao verificar numero:', err.message)
+  }
+
+  return null
+}
+
 async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('./sessions')
   const { version } = await fetchLatestBaileysVersion()
@@ -53,14 +88,14 @@ async function startWhatsApp() {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', connection: connectionStatus, version: '1.0.0' })
+  res.json({ status: 'ok', connection: connectionStatus, version: '1.1.0' })
 })
 
 app.get('/qr', (req, res) => {
   const key = req.query.key
   if (key !== API_KEY) return res.status(401).send('Unauthorized')
   if (connectionStatus === 'connected') {
-    return res.send('<html><body style="font-family:sans-serif;text-align:center;padding:40px"><h2 style="color:green">✅ WhatsApp Conectado!</h2></body></html>')
+    return res.send('<html><body style="font-family:sans-serif;text-align:center;padding:40px"><h2 style="color:green">&#x2705; WhatsApp Conectado!</h2></body></html>')
   }
   const img = qrBase64 ? `<img src="${qrBase64}" style="width:300px;height:300px"/>` : '<p>Aguardando QR code... atualize em 5 segundos</p>'
   res.send(`<html><head><meta http-equiv="refresh" content="10"/></head><body style="font-family:sans-serif;text-align:center;padding:40px"><h2>Escaneie o QR Code</h2>${img}<p style="color:gray">Atualiza automaticamente a cada 10 segundos</p></body></html>`)
@@ -85,13 +120,28 @@ app.post('/send', authMiddleware, async (req, res) => {
     return res.status(503).json({ error: 'WhatsApp nao conectado. Escaneie o QR code primeiro.' })
   }
   try {
-    const jid = number.includes('@') ? number : `${number}@s.whatsapp.net`
+    const jid = await resolveJid(number)
+    if (!jid) {
+      return res.status(422).json({ error: `Numero ${number} nao encontrado no WhatsApp` })
+    }
     await sock.sendMessage(jid, { text })
-    res.json({ success: true, number, status: 'sent' })
+    res.json({ success: true, number: jid.replace('@s.whatsapp.net', ''), status: 'sent' })
   } catch (err) {
     console.error('Erro ao enviar:', err)
     res.status(500).json({ error: err.message })
   }
+})
+
+// Verifica se um numero existe no WhatsApp e retorna o JID correto
+app.get('/check/:number', authMiddleware, async (req, res) => {
+  if (!sock || connectionStatus !== 'connected') {
+    return res.status(503).json({ error: 'WhatsApp nao conectado.' })
+  }
+  const jid = await resolveJid(req.params.number)
+  if (!jid) {
+    return res.json({ exists: false, number: req.params.number })
+  }
+  res.json({ exists: true, jid, number: jid.replace('@s.whatsapp.net', '') })
 })
 
 const PORT = process.env.PORT || 3000
